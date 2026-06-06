@@ -4,6 +4,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const session = require("express-session");
 const multer = require("multer");
+const cors = require("cors");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const User = require("./db/userModel");
@@ -11,24 +12,40 @@ const Photo = require("./db/photoModel");
 const SchemaInfo = require("./db/schemaInfo");
 
 const app = express();
-const PORT = process.env.PORT || 8081;
-const DB_URL = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/photo-share";
-const FRONTEND_BUILD = path.join(__dirname, "..", "frontend", "build");
+const PORT = process.env.PORT;
+const DB_URL = process.env.MONGO_URL;
+
+const FE_URL = "https://qy25hx-3000.csb.app/".replace(/\/$/, "");
 
 const isApiRoute = (reqPath) =>
-  ["/admin", "/user", "/photos", "/comments", "/test", "/images"].some((prefix) =>
-    reqPath.startsWith(prefix)
+  ["/admin", "/user", "/photos", "/comments", "/test", "/images"].some(
+    (prefix) => reqPath.startsWith(prefix)
   );
 
 mongoose.connect(DB_URL).then(() => console.log("Mongo connected."));
+app.set("trust proxy", 1);
 app.use(express.json());
+
+app.use(
+  cors({
+    origin: FE_URL,
+    credentials: true,
+  })
+);
+
 app.use(
   session({
     secret: "photo-share-secret",
     resave: false,
     saveUninitialized: false,
+    cookie: {
+      secure: true, // CodeSandbox uses HTTPS
+      sameSite: "none", // Required for frontend/backend on different domains
+      httpOnly: true,
+    },
   })
 );
+
 app.use("/images", express.static(path.join(__dirname, "images")));
 
 const upload = multer({ dest: path.join(__dirname, "images") });
@@ -74,8 +91,15 @@ app.post("/user", async (req, res) => {
     occupation = "",
   } = req.body;
 
-  if (!login_name?.trim() || !password?.trim() || !first_name?.trim() || !last_name?.trim()) {
-    return res.status(400).send("login_name, password, first_name, and last_name are required.");
+  if (
+    !login_name?.trim() ||
+    !password?.trim() ||
+    !first_name?.trim() ||
+    !last_name?.trim()
+  ) {
+    return res
+      .status(400)
+      .send("login_name, password, first_name, and last_name are required.");
   }
 
   const existing = await User.findOne({ login_name }).lean();
@@ -103,7 +127,11 @@ app.post("/user", async (req, res) => {
 
 app.use((req, res, next) => {
   if (!isApiRoute(req.path)) return next();
-  if (req.path === "/admin/login" || req.path === "/admin/logout" || req.path === "/user") {
+  if (
+    req.path === "/admin/login" ||
+    req.path === "/admin/logout" ||
+    req.path === "/user"
+  ) {
     return next();
   }
   return requireLogin(req, res, next);
@@ -120,7 +148,10 @@ app.get("/user/list", async (req, res) => {
 });
 
 app.get("/user/:id", async (req, res) => {
-  const user = await User.findById(req.params.id, "_id first_name last_name location description occupation").lean();
+  const user = await User.findById(
+    req.params.id,
+    "_id first_name last_name location description occupation"
+  ).lean();
   if (!user) return res.status(400).send("Invalid user id.");
   return res.json(user);
 });
@@ -131,9 +162,14 @@ app.get("/photosOfUser/:id", async (req, res) => {
 
   const photos = await Photo.find({ user_id: req.params.id }).lean();
   const commenterIds = [
-    ...new Set(photos.flatMap((p) => p.comments.map((c) => c.user_id)).filter(Boolean)),
+    ...new Set(
+      photos.flatMap((p) => p.comments.map((c) => c.user_id)).filter(Boolean)
+    ),
   ];
-  const commenters = await User.find({ _id: { $in: commenterIds } }, "_id first_name last_name").lean();
+  const commenters = await User.find(
+    { _id: { $in: commenterIds } },
+    "_id first_name last_name"
+  ).lean();
   const userMap = commenters.reduce((acc, u) => ({ ...acc, [u._id]: u }), {});
 
   const payload = photos.map((photo) => ({
@@ -141,11 +177,16 @@ app.get("/photosOfUser/:id", async (req, res) => {
     user_id: photo.user_id,
     file_name: photo.file_name,
     date_time: photo.date_time,
+    base64: photo.base64,
     comments: (photo.comments || []).map((comment) => ({
       _id: comment._id,
       comment: comment.comment,
       date_time: comment.date_time,
-      user: userMap[comment.user_id] || { _id: comment.user_id, first_name: "Unknown", last_name: "" },
+      user: userMap[comment.user_id] || {
+        _id: comment.user_id,
+        first_name: "Unknown",
+        last_name: "",
+      },
     })),
   }));
   return res.json(payload);
@@ -168,29 +209,30 @@ app.post("/commentsOfPhoto/:photo_id", async (req, res) => {
 });
 
 app.post("/photos/new", upload.single("photo"), async (req, res) => {
-  if (!req.file) return res.status(400).send("No photo uploaded.");
+  if (!req.file) {
+    return res.status(400).send("No photo uploaded.");
+  }
 
-  const ext = path.extname(req.file.originalname || ".jpg");
-  const finalName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const finalPath = path.join(__dirname, "images", finalName);
-  fs.renameSync(req.file.path, finalPath);
+  // Convert uploaded file to Base64
+  const imageBase64 = fs.readFileSync(req.file.path, {
+    encoding: "base64",
+  });
+
+  // Optional: preserve the MIME type
+  const imageData = `data:${req.file.mimetype};base64,${imageBase64}`;
+
+  // Clean up the temporary upload
+  fs.unlinkSync(req.file.path);
 
   const photo = await Photo.create({
     _id: String(Date.now()),
     user_id: req.session.user._id,
-    file_name: finalName,
+    base64: imageData, // New schema field
     date_time: new Date(),
     comments: [],
   });
 
-  return res.json(photo);
-});
-
-app.use(express.static(FRONTEND_BUILD));
-
-app.get("/*splat", (req, res, next) => {
-  if (isApiRoute(req.path)) return next();
-  res.sendFile(path.join(FRONTEND_BUILD, "index.html"));
+  res.json(photo);
 });
 
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));

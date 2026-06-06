@@ -17,6 +17,7 @@ const photoSchema = new mongoose.Schema(
     date_time: Date,
     file_name: String,
     comments: [commentSchema],
+    base64: String,
   },
   { collection: "Photo" }
 );
