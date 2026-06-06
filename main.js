@@ -15,7 +15,7 @@ const app = express();
 const PORT = process.env.PORT;
 const DB_URL = process.env.MONGO_URL;
 
-const FE_URL = "https://qy25hx-3000.csb.app/".replace(/\/$/, "");
+const FE_URL = "".replace(/\/$/, "");
 
 const isApiRoute = (reqPath) =>
   ["/admin", "/user", "/photos", "/comments", "/test", "/images"].some(
